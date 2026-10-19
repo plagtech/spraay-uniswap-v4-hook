@@ -99,6 +99,16 @@ Against one transfer per recipient, the hook saves more than half the gas from a
 
 ## Deployments
 
+### BatchDistributeHook
+
+| Chain        | Hook                                         | Deploy tx                                                                                                                         | Basescan                                                                                     |
+| ------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Base (8453)  | `0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010` | [`0x31b9f034…ebe9d`](https://basescan.org/tx/0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d) | [verified source](https://basescan.org/address/0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010#code) |
+
+Full deploy tx hash: `0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d` (block 52791101). Constructor arguments and salt are recorded in [`deployments/base.json`](deployments/base.json).
+
+### Dependencies
+
 | Chain     | Spraay (`SprayContract`)                     | V4 PoolManager                               |
 | --------- | -------------------------------------------- | -------------------------------------------- |
 | Base      | `0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC` | `0x498581fF718922c3f8e6A244956aF099B2652b2b` |
@@ -107,9 +117,9 @@ Against one transfer per recipient, the hook saves more than half the gas from a
 Both Spraay contracts are verified on Sourcify (exact match) and have identical source. The addresses are also available in Solidity via `src/SpraayAddresses.sol`. Other V4 chains are supported as soon as Spraay is deployed there.
 
 ```sh
-HOOK_OWNER=<owner> HOOK_OPERATOR=<operator> \
+# set DEPLOYER_PRIVATE_KEY, HOOK_OWNER, HOOK_OPERATOR in .env (see .env.example)
 forge script script/DeployBatchDistributeHook.s.sol:DeployBatchDistributeHookScript \
-    --rpc-url base --private-key $PRIVATE_KEY --broadcast
+    --rpc-url base --broadcast
 ```
 
 The script mines a salt for the `afterInitialize | afterDonate` flags, deploys through the deterministic CREATE2 deployer (`0x4e59b44847b379578588920cA78FbF26c0B4956C`), checks the resulting address, and prints the matching `forge verify-contract` command.
