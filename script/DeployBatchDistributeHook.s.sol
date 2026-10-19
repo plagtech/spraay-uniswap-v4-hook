@@ -18,11 +18,9 @@ import {SpraayAddresses} from "../src/SpraayAddresses.sol";
  *
  * Supported chains: Base (8453), BNB Chain (56) — wherever Spraay and the V4 PoolManager are both live.
  *
- * Step 1: Deploy
- * HOOK_OWNER=<owner> HOOK_OPERATOR=<operator> \
+ * Step 1: Deploy (reads DEPLOYER_PRIVATE_KEY, HOOK_OWNER, HOOK_OPERATOR from .env)
  * forge script script/DeployBatchDistributeHook.s.sol:DeployBatchDistributeHookScript -vvv \
  *     --rpc-url base \
- *     --private-key $PRIVATE_KEY \
  *     --broadcast
  *
  * Step 2: Verify (Basescan / BscScan via Etherscan V2)
@@ -34,6 +32,7 @@ contract DeployBatchDistributeHookScript is Script {
     uint160 internal constant HOOK_FLAGS = uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_DONATE_FLAG);
 
     function run() public returns (BatchDistributeHook hook) {
+        uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         IPoolManager poolManager = IPoolManager(AddressConstants.getPoolManagerAddress(block.chainid));
         address spraay = SpraayAddresses.forChain(block.chainid);
         address owner = vm.envAddress("HOOK_OWNER");
@@ -41,6 +40,7 @@ contract DeployBatchDistributeHookScript is Script {
 
         console2.log("PoolManager", address(poolManager));
         console2.log("Spraay     ", spraay);
+        console2.log("Deployer   ", vm.addr(deployerKey));
         console2.log("Owner      ", owner);
         console2.log("Operator   ", operator);
 
@@ -50,7 +50,7 @@ contract DeployBatchDistributeHookScript is Script {
         console2.log("Mined hook address", hookAddress);
         console2.logBytes32(salt);
 
-        vm.startBroadcast();
+        vm.startBroadcast(deployerKey);
         hook = new BatchDistributeHook{salt: salt}(poolManager, spraay, owner, operator);
         vm.stopBroadcast();
 

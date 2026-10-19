@@ -1,0 +1,18 @@
+{
+  "chainId": 8453,
+  "BatchDistributeHook": {
+    "address": "0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010",
+    "txHash": "0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d",
+    "blockNumber": 52791101,
+    "salt": "0x00000000000000000000000000000000000000000000000000000000000007be",
+    "deployer": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1",
+    "constructorArgs": {
+      "poolManager": "0x498581fF718922c3f8e6A244956aF099B2652b2b",
+      "spraay": "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC",
+      "owner": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1",
+      "operator": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1"
+    },
+    "verified": true,
+    "verifiedOn": "basescan"
+  }
+}
