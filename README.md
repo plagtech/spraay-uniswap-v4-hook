@@ -99,7 +99,7 @@ Execution gas for one ERC-20 distribution to fresh addresses, from `test/BatchDi
 |        100 |   3,020,783 |                    2,707,667 |            7,228,000 |                 −58% |
 |        200 |   5,866,889 |                    5,362,392 |           14,456,000 |                 −59% |
 
-Against one transfer per recipient, the hook saves more than half the gas from about 50 recipients up. A purpose-built loop contract without fee, pool attribution or access control is about 8–15% cheaper per batch; the hook trades that for same-transaction funding, operator roles, native-currency support with refunds, and on-chain attribution to a V4 pool. Reproduce with `forge test --match-contract BatchDistributeHookGasTest -vv`.
+Against one transfer per recipient, the hook saves more than half the gas from about 50 recipients up. A purpose-built loop contract without fee, pool attribution or access control is about 8–15% cheaper per batch; the hook trades that for same-transaction funding, operator roles, native-currency support with refunds, and on-chain attribution to a V4 pool. These numbers are measured against `MockSpraay`, which is the earlier Spraay source, not the contract now deployed on Base. Reproduce with `forge test --match-contract BatchDistributeHookGasTest -vv`.
 
 ## Deployments
 
@@ -107,20 +107,20 @@ Against one transfer per recipient, the hook saves more than half the gas from a
 
 | Chain        | Hook                                         | Deploy tx                                                                                                                         | Basescan                                                                                     |
 | ------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Base (8453)  | `0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010` | [`0x31b9f034…ebe9d`](https://basescan.org/tx/0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d) | [verified source](https://basescan.org/address/0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010#code) |
+| Base (8453)  | `0x2aB86A34661C0629C62A0f1980c96D41Ea471010` | [`0x3caf0284…0f61c`](https://basescan.org/tx/0x3caf0284bd79807803b5999672c62bf762be66b2b9d1378a873ae5c15190f61c) | [verified source](https://basescan.org/address/0x2aB86A34661C0629C62A0f1980c96D41Ea471010#code) |
 
-Full deploy tx hash: `0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d` (block 52791101). Constructor arguments and salt are recorded in [`deployments/base.json`](deployments/base.json).
+Full deploy tx hash: `0x3caf0284bd79807803b5999672c62bf762be66b2b9d1378a873ae5c15190f61c` (block 54190974). Constructor arguments and salt are recorded in [`deployments/base.json`](deployments/base.json).
 
-> **This deployment predates the current source.** It has no partial-delivery refund handling, so it has no `claimRefund`, `pendingRefunds`, `releaseRefund` or `BatchRefunded`, and it can't receive native refunds. The rest of this README describes the current source, which isn't deployed yet.
+The earlier hook at `0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010` is superseded and should not be used for new pools.
 
 ### Dependencies
 
 | Chain     | Spraay (`SprayContract`)                     | V4 PoolManager                               |
 | --------- | -------------------------------------------- | -------------------------------------------- |
-| Base      | `0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC` | `0x498581fF718922c3f8e6A244956aF099B2652b2b` |
+| Base      | `0x4B1d57EBFaBDF3F21F30f210a1d95f649E9edD4c` | `0x498581fF718922c3f8e6A244956aF099B2652b2b` |
 | BNB Chain | `0x3093a2951FB77b3beDfB8BA20De645F7413432C1` | `0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF` |
 
-Both Spraay contracts are verified on Sourcify (exact match) and have identical source. The addresses are also available in Solidity via `src/SpraayAddresses.sol`. Other V4 chains are supported as soon as Spraay is deployed there.
+The Base contract is built from `src/SprayContract.sol` and skips failed recipients. It is verified on Basescan and Sourcify. The BNB Chain contract is the earlier version, which reverts the whole batch when a recipient fails, and is verified on Sourcify. The addresses are also available in Solidity via `src/SpraayAddresses.sol`. Other V4 chains are supported as soon as Spraay is deployed there.
 
 ```sh
 # set DEPLOYER_PRIVATE_KEY, HOOK_OWNER, HOOK_OPERATOR in .env (see .env.example)
@@ -142,13 +142,14 @@ BASE_RPC_URL=https://mainnet.base.org BSC_RPC_URL=https://bsc-dataseed.binance.o
     forge test --match-contract BatchDistributeHookForkTest
 ```
 
-Built on [OpenZeppelin uniswap-hooks](https://github.com/OpenZeppelin/uniswap-hooks) (`BaseHook`) and [hookmate](https://github.com/akshatmittal/hookmate), matching [Uniswap/v4-template](https://github.com/Uniswap/v4-template). Unit tests place the hook at a flag-encoded address with `deployCodeTo` and run against a local PoolManager, including a real add-liquidity → `donate` → `settle` round trip. `test/mocks/MockSpraay.sol` is a copy of the verified Spraay source in which only the import paths and the contract name are changed.
+Built on [OpenZeppelin uniswap-hooks](https://github.com/OpenZeppelin/uniswap-hooks) (`BaseHook`) and [hookmate](https://github.com/akshatmittal/hookmate), matching [Uniswap/v4-template](https://github.com/Uniswap/v4-template). Unit tests place the hook at a flag-encoded address with `deployCodeTo` and run against a local PoolManager, including a real add-liquidity → `donate` → `settle` round trip. `test/mocks/MockSpraay.sol` is a copy of the earlier verified Spraay source in which only the import paths and the contract name are changed.
 
 ## Limitations
 
 - Fee-on-transfer and rebasing tokens are not supported, because Spraay pulls the exact gross amount.
 - Each call is limited to 200 recipients (Spraay's `MAX_RECIPIENTS`). Larger lists must be split across several calls.
-- In a native distribution, a recipient contract that rejects the payment makes the whole batch revert. Spraay does not skip failed recipients.
+- On Base, failed recipients are skipped and their amounts refunded, so a successful transaction doesn't mean everyone was paid. The batch reverts only if every recipient fails.
+- On BNB Chain, Spraay is still the earlier contract, so a recipient that fails makes the whole batch revert. The hook isn't deployed there yet.
 - Allocation is trusted to the operator. The hook enforces who can distribute, not who should receive.
 
 ## Related

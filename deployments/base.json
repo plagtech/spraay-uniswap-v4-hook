@@ -1,18 +1,47 @@
 {
   "chainId": 8453,
   "BatchDistributeHook": {
-    "address": "0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010",
-    "txHash": "0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d",
-    "blockNumber": 52791101,
-    "salt": "0x00000000000000000000000000000000000000000000000000000000000007be",
+    "address": "0x2aB86A34661C0629C62A0f1980c96D41Ea471010",
+    "txHash": "0x3caf0284bd79807803b5999672c62bf762be66b2b9d1378a873ae5c15190f61c",
+    "blockNumber": 54190974,
+    "salt": "0x0000000000000000000000000000000000000000000000000000000000002bff",
     "deployer": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1",
     "constructorArgs": {
       "poolManager": "0x498581fF718922c3f8e6A244956aF099B2652b2b",
-      "spraay": "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC",
+      "spraay": "0x4B1d57EBFaBDF3F21F30f210a1d95f649E9edD4c",
       "owner": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1",
       "operator": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1"
     },
     "verified": true,
-    "verifiedOn": "basescan"
+    "verifiedOn": ["basescan", "sourcify"]
+  },
+  "SprayContract": {
+    "address": "0x4B1d57EBFaBDF3F21F30f210a1d95f649E9edD4c",
+    "txHash": "0x399008ec80990038b30fb6ac80d0c7eb2090f2aa2b20659c80ec57d8aec1d8ee",
+    "blockNumber": 54185293,
+    "deployer": "0x033d3ce3BFd69B1d180869308822075219e771b5",
+    "constructorArgs": {
+      "feeRecipient": "0x033d3ce3BFd69B1d180869308822075219e771b5",
+      "feeBps": 30
+    },
+    "verified": true,
+    "verifiedOn": ["basescan", "sourcify"]
+  },
+  "superseded": {
+    "BatchDistributeHook": {
+      "address": "0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010",
+      "txHash": "0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d",
+      "blockNumber": 52791101,
+      "salt": "0x00000000000000000000000000000000000000000000000000000000000007be",
+      "deployer": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1",
+      "constructorArgs": {
+        "poolManager": "0x498581fF718922c3f8e6A244956aF099B2652b2b",
+        "spraay": "0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC",
+        "owner": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1",
+        "operator": "0x867c6c5487Ea8504010B776a7a1475751F1b40a1"
+      },
+      "verified": true,
+      "verifiedOn": ["basescan"]
+    }
   }
 }
