@@ -24,10 +24,30 @@ import {ISpraay} from "./interfaces/ISpraay.sol";
 /// liquidity). This hook complements them with a push model: the operator decides the recipient
 /// list off-chain and delivers everything in one call, with no claim step for the recipients.
 ///
-/// Funding model: the hook is non-custodial. Each distribution pulls exactly
-/// `amount + Spraay fee` from the calling operator (ERC-20 via transferFrom, native via msg.value),
-/// approves Spraay for exactly that amount and calls it in the same transaction. Excess native
-/// currency is refunded to the operator. Distributions never touch PoolManager accounting.
+/// Funding model: the hook holds no funds between calls, apart from the held refunds described
+/// below. Each distribution pulls exactly `amount + Spraay fee` from the calling operator (ERC-20
+/// via transferFrom, native via msg.value), approves Spraay for exactly that amount and calls it in
+/// the same transaction. Excess native currency is refunded to the operator, and the call reverts if
+/// the operator can't receive it. Distributions never touch PoolManager accounting.
+///
+/// Partial delivery: Spraay skips a recipient whose transfer fails and refunds its amount and fee to
+/// this hook, which forwards the refund to the operator, in the same transaction unless the operator
+/// can't receive it. A successful call does not mean every recipient was paid: `BatchRefunded` and
+/// `NativeRefundHeld` report the undelivered amount, and Spraay's `RecipientFailed` events name the
+/// recipients. The refund is measured from balances, so this hook
+/// works with both refunding and older all-or-nothing Spraay deployments. It also means funds a
+/// recipient force-sends here during the spray are reported as undelivered, so `RecipientFailed` is
+/// the authority on who was skipped. Listing this hook as a recipient is rejected for the same reason.
+///
+/// Operators that can't receive native currency: a failed send of undelivered funds never reverts
+/// the batch, because any skipped recipient could otherwise use it to block the whole distribution.
+/// The funds are recorded in `pendingRefunds` until the operator calls `claimRefund`, or the owner
+/// calls `releaseRefund`, which can only pay the operator itself. `rescueTokens` can't touch them.
+/// Any failed send counts, including a temporary one such as a paused `receive()`. The distribution
+/// functions return nothing, so a contract operator that needs to know on-chain must compare
+/// `pendingRefunds` before and after the call; off-chain, watch for `NativeRefundHeld`. A
+/// contract that can neither receive native currency nor call `claimRefund` loses access to held
+/// funds for good, so contract operators need at least one of the two.
 ///
 /// Hook callbacks: `afterInitialize` registers pools that use this hook, so every distribution is
 /// attributable to a real V4 pool; `afterDonate` emits an event so indexers can see pull-side
@@ -51,10 +71,19 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
     /// @notice Pools initialized with this hook
     mapping(PoolId => bool) public isRegisteredPool;
 
+    /// @notice Undelivered native currency each operator couldn't receive and has yet to claim
+    mapping(address => uint256) public pendingRefunds;
+
+    /// @notice Sum of `pendingRefunds`, which `rescueTokens` can't touch
+    uint256 public totalPendingRefunds;
+
     event SpraayContractUpdated(address indexed oldSpraay, address indexed newSpraay);
     event OperatorUpdated(address indexed operator, bool allowed);
     event PoolRegistered(PoolId indexed poolId);
     event PoolDonation(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1);
+    /// @notice A distribution was requested. Amounts are as quoted, before any skipped recipients.
+    /// The operator's actual cost is `totalAmount + feeAmount` minus any `BatchRefunded.amount` or
+    /// `NativeRefundHeld.undelivered`, the latter being paid out later through `HeldRefundPaid`.
     event BatchDistributed(
         PoolId indexed poolId,
         address indexed operator,
@@ -63,6 +92,15 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
         uint256 totalAmount,
         uint256 feeAmount
     );
+    /// @notice Part of a distribution went undelivered, and `amount` was returned to the operator
+    event BatchRefunded(PoolId indexed poolId, address indexed operator, address indexed token, uint256 amount);
+    /// @notice The operator couldn't receive `undelivered`, so it was added to `pendingRefunds`.
+    /// Emitted instead of `BatchRefunded`.
+    event NativeRefundHeld(PoolId indexed poolId, address indexed operator, uint256 undelivered);
+    /// @notice A held refund left the hook, through `claimRefund` or `releaseRefund`
+    event HeldRefundPaid(address indexed operator, address indexed to, uint256 amount);
+    /// @notice The owner recovered native currency that isn't owed to any operator
+    event NativeRescued(address indexed to, uint256 amount);
 
     error NotOperator();
     error ZeroAddress();
@@ -73,6 +111,11 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
     error InsufficientNativeAmount(uint256 required, uint256 provided);
     error UnexpectedNativeAmount();
     error NativeTransferFailed();
+    error UnexpectedNativeSender();
+    error NothingToClaim();
+    error RescueExceedsAvailable(uint256 requested, uint256 available);
+    error RenounceDisabled();
+    error InvalidRecipient();
 
     modifier onlyOperator() {
         if (!isOperator[msg.sender]) revert NotOperator();
@@ -142,7 +185,9 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
     /// @param recipients Recipient addresses (max 200)
     /// @param amounts Amount for each recipient, excluding the Spraay fee
     /// @dev ERC-20: operator must approve this hook for `quoteTotalCost(sum(amounts))`.
-    /// Native: msg.value must be at least `quoteTotalCost(sum(amounts))`; any excess is refunded.
+    /// Native: msg.value must be at least `quoteTotalCost(sum(amounts))`. Any excess is refunded, and
+    /// the call reverts if the operator can't receive it. An undelivered amount the operator can't
+    /// receive is held for `claimRefund` instead of reverting.
     function batchDistribute(PoolId poolId, address token, address[] calldata recipients, uint256[] calldata amounts)
         external
         payable
@@ -155,6 +200,7 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
         ISpraay.Recipient[] memory batch = new ISpraay.Recipient[](recipients.length);
         uint256 totalAmount = 0;
         for (uint256 i; i < recipients.length; ++i) {
+            if (recipients[i] == address(this)) revert InvalidRecipient();
             batch[i] = ISpraay.Recipient({recipient: payable(recipients[i]), amount: amounts[i]});
             totalAmount += amounts[i];
         }
@@ -163,13 +209,14 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
         uint256 requiredAmount = _prepare(_spraay, token, totalAmount);
         emit BatchDistributed(poolId, msg.sender, token, recipients.length, totalAmount, requiredAmount - totalAmount);
 
+        uint256 balanceBefore = _balanceBeforeCall(token);
         if (token == address(0)) {
             _spraay.sprayETH{value: requiredAmount}(batch);
-            _refundExcess(requiredAmount);
         } else {
             _pullAndApprove(token, address(_spraay), requiredAmount);
             _spraay.sprayToken(token, batch);
         }
+        _returnToOperator(poolId, token, requiredAmount, balanceBefore);
     }
 
     /// @notice Push-distribute the same amount to every recipient in one transaction
@@ -187,6 +234,7 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
 
         address payable[] memory batch = new address payable[](recipients.length);
         for (uint256 i; i < recipients.length; ++i) {
+            if (recipients[i] == address(this)) revert InvalidRecipient();
             batch[i] = payable(recipients[i]);
         }
 
@@ -195,13 +243,27 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
         uint256 requiredAmount = _prepare(_spraay, token, totalAmount);
         emit BatchDistributed(poolId, msg.sender, token, recipients.length, totalAmount, requiredAmount - totalAmount);
 
+        uint256 balanceBefore = _balanceBeforeCall(token);
         if (token == address(0)) {
             _spraay.sprayEqual{value: requiredAmount}(address(0), batch, amountEach);
-            _refundExcess(requiredAmount);
         } else {
             _pullAndApprove(token, address(_spraay), requiredAmount);
             _spraay.sprayEqual(token, batch, amountEach);
         }
+        _returnToOperator(poolId, token, requiredAmount, balanceBefore);
+    }
+
+    /// @notice Accepts refunds from Spraay only, so native currency can't be sent here by mistake.
+    /// Anything forced in another way, such as by `selfdestruct`, is recovered with `rescueTokens`.
+    receive() external payable {
+        if (msg.sender != address(spraay)) revert UnexpectedNativeSender();
+    }
+
+    /// @notice Withdraw the caller's held refund. Works after the caller stops being an operator.
+    /// @param to Receives the funds, so an operator that can't receive native currency can still claim
+    function claimRefund(address to) external nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        _payHeldRefund(msg.sender, to);
     }
 
     /// @notice Amount (distribution + Spraay fee) an operator must provide to distribute `totalAmount`
@@ -224,10 +286,30 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
         emit OperatorUpdated(operator, allowed);
     }
 
-    /// @notice Recover ERC-20s sent to the hook by mistake. The hook never holds funds between calls.
-    function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
+    /// @notice Recover stray ERC-20s or force-sent native currency. Held refunds are excluded.
+    /// @param token ERC-20 to recover, or address(0) for the chain's native currency
+    function rescueTokens(address token, address to, uint256 amount) external onlyOwner nonReentrant {
         if (to == address(0)) revert ZeroAddress();
-        IERC20(token).safeTransfer(to, amount);
+        if (token == address(0)) {
+            uint256 available = address(this).balance - totalPendingRefunds;
+            if (amount > available) revert RescueExceedsAvailable(amount, available);
+            (bool success,) = to.call{value: amount}("");
+            if (!success) revert NativeTransferFailed();
+            emit NativeRescued(to, amount);
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
+    }
+
+    /// @notice Pay an operator's held refund to the operator itself, for a contract that can receive
+    /// native currency now but has no way to call `claimRefund`.
+    function releaseRefund(address operator) external onlyOwner nonReentrant {
+        _payHeldRefund(operator, operator);
+    }
+
+    /// @notice Disabled: without an owner, stray funds could never be rescued
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
     }
 
     // ============ Internal ============
@@ -252,12 +334,54 @@ contract BatchDistributeHook is BaseHook, Ownable2Step, ReentrancyGuard {
         }
     }
 
-    function _refundExcess(uint256 requiredAmount) internal {
-        uint256 excess = msg.value - requiredAmount;
-        if (excess > 0) {
-            (bool success,) = msg.sender.call{value: excess}("");
-            if (!success) revert NativeTransferFailed();
+    /// @dev The hook's own balance, excluding this call's msg.value. Anything above it after the
+    /// spray belongs to the operator; tokens stranded here earlier stay put for `rescueTokens`.
+    function _balanceBeforeCall(address token) internal view returns (uint256) {
+        if (token == address(0)) return address(this).balance - msg.value;
+        return IERC20(token).balanceOf(address(this));
+    }
+
+    /// @dev Sends the operator everything Spraay refunded, plus any msg.value above the quote.
+    /// `BatchRefunded` reports only the undelivered part, so excess msg.value is not counted.
+    /// The two go out as separate sends, so that skipped recipients can't change whether the excess
+    /// is accepted. A failed excess send reverts, handing the overpayment straight back to the caller.
+    /// A failed send of undelivered funds must not revert, or a skipped recipient could block the batch.
+    function _returnToOperator(PoolId poolId, address token, uint256 requiredAmount, uint256 balanceBefore) internal {
+        uint256 undelivered;
+        if (token == address(0)) {
+            uint256 excess = msg.value - requiredAmount;
+            undelivered = address(this).balance - balanceBefore - excess;
+            if (excess > 0) {
+                (bool excessSent,) = msg.sender.call{value: excess}("");
+                if (!excessSent) revert NativeTransferFailed();
+            }
+            if (undelivered > 0) {
+                (bool undeliveredSent,) = msg.sender.call{value: undelivered}("");
+                if (!undeliveredSent) {
+                    pendingRefunds[msg.sender] += undelivered;
+                    totalPendingRefunds += undelivered;
+                    emit NativeRefundHeld(poolId, msg.sender, undelivered);
+                    return;
+                }
+            }
+        } else {
+            undelivered = IERC20(token).balanceOf(address(this)) - balanceBefore;
+            if (undelivered > 0) IERC20(token).safeTransfer(msg.sender, undelivered);
         }
+        if (undelivered > 0) emit BatchRefunded(poolId, msg.sender, token, undelivered);
+    }
+
+    /// @dev Clears the record before the external call. The callers are `nonReentrant`.
+    function _payHeldRefund(address operator, address to) internal {
+        uint256 amount = pendingRefunds[operator];
+        if (amount == 0) revert NothingToClaim();
+
+        pendingRefunds[operator] = 0;
+        totalPendingRefunds -= amount;
+
+        (bool success,) = to.call{value: amount}("");
+        if (!success) revert NativeTransferFailed();
+        emit HeldRefundPaid(operator, to, amount);
     }
 
     function _pullAndApprove(address token, address spender, uint256 amount) internal {

@@ -38,7 +38,7 @@ operator ──batchDistribute(poolId, token, recipients, amounts)──▶ Batc
                                           recipient₁ recipient₂    ...    recipient₂₀₀  fee recipient
 ```
 
-- **Non-custodial.** The hook holds no funds between calls. Each call pulls exactly `amount + fee` from the operator, approves Spraay for exactly that amount, and Spraay uses all of it. Excess native currency is refunded in the same transaction.
+- **Holds no funds between calls, with one exception.** Each call pulls exactly `amount + fee` from the operator and approves Spraay for exactly that amount. Undelivered amounts and excess native currency are refunded in the same transaction. The exception is an undelivered native refund the operator can't receive, for any reason, including a temporary one such as a paused `receive()`. The batch still succeeds, the hook emits `NativeRefundHeld`, and the amount is recorded in `pendingRefunds` for the operator to withdraw with `claimRefund(to)`. Excess `msg.value` the operator can't receive reverts the call instead.
 - **Pool-attributed.** `afterInitialize` registers every pool created with this hook, and distributions must reference a registered `PoolId`. `afterDonate` emits `PoolDonation`, so indexers can see pull-side and push-side incentives for the same pool.
 - **No effect on swaps or liquidity.** Only `afterInitialize` and `afterDonate` are enabled and neither returns a delta, so swaps and liquidity changes cost no extra gas. Distributions never touch PoolManager accounting.
 
@@ -64,21 +64,25 @@ function batchDistributeEqual(PoolId poolId, address token, address[] calldata r
 
 function quoteTotalCost(uint256 totalAmount) external view returns (uint256); // amount + Spraay fee
 
+function pendingRefunds(address operator) external view returns (uint256);    // held native refund
+function claimRefund(address to) external;                                    // withdraw the caller's held refund
+
 // owner only
 function setSpraayContract(address newSpraay) external;
 function setOperator(address operator, bool allowed) external;
-function rescueTokens(address token, address to, uint256 amount) external;
+function rescueTokens(address token, address to, uint256 amount) external; // token == address(0) rescues native currency, never held refunds
+function releaseRefund(address operator) external;                         // pays a held refund to that operator only
 ```
 
 **Roles:**
 
-- **Owner** (`Ownable2Step`) manages operators, can point the hook at a new Spraay deployment, and can recover tokens sent to the hook by mistake. The owner is not automatically an operator. The owner is a constructor argument because the CREATE2 deployer, not the caller, is `msg.sender` at deploy time.
-- **Operators** trigger distributions and fund them.
+- **Owner** (`Ownable2Step`) manages operators, can point the hook at a new Spraay deployment, and can recover stray ERC-20s or force-sent native currency, but can't take held refunds. Ownership can be transferred but not renounced. The owner is not automatically an operator. The owner is a constructor argument because the CREATE2 deployer, not the caller, is `msg.sender` at deploy time.
+- **Operators** trigger distributions and fund them. A contract operator must be able to receive native currency or call `claimRefund`, or held funds are lost to it for good. The distribution functions return nothing, so a contract that needs to detect a hold on-chain must compare `pendingRefunds` before and after the call. Off-chain, watch for `NativeRefundHeld`.
 
 **Funding a distribution:**
 
 - **ERC-20:** `approve(hook, quoteTotalCost(sum(amounts)))`, then call `batchDistribute`.
-- **Native:** send `msg.value >= quoteTotalCost(sum(amounts))`. The hook refunds any excess.
+- **Native:** send `msg.value >= quoteTotalCost(sum(amounts))`. The hook refunds any excess, and the call reverts if the operator can't receive it.
 
 ## Spraay fee
 
@@ -90,12 +94,12 @@ Execution gas for one ERC-20 distribution to fresh addresses, from `test/BatchDi
 
 | Recipients | Hook (1 tx) | Minimal loop contract (1 tx) | N separate transfers | Hook vs. N transfers |
 | ---------: | ----------: | ---------------------------: | -------------------: | -------------------: |
-|          5 |     316,347 |                      185,812 |              361,340 |                 −12% |
-|         50 |   1,584,308 |                    1,380,385 |            3,614,000 |                 −56% |
-|        100 |   2,993,781 |                    2,707,667 |            7,228,000 |                 −59% |
-|        200 |   5,814,984 |                    5,362,392 |           14,456,000 |                 −60% |
+|          5 |     319,691 |                      185,812 |              361,340 |                 −12% |
+|         50 |   1,598,859 |                    1,380,385 |            3,614,000 |                 −56% |
+|        100 |   3,020,783 |                    2,707,667 |            7,228,000 |                 −58% |
+|        200 |   5,866,889 |                    5,362,392 |           14,456,000 |                 −59% |
 
-Against one transfer per recipient, the hook saves more than half the gas from about 50 recipients up. A purpose-built loop contract without fee, pool attribution or access control is about 8–15% cheaper per batch; the hook trades that for non-custodial funding, operator roles, native-currency support with refunds, and on-chain attribution to a V4 pool. Reproduce with `forge test --match-contract BatchDistributeHookGasTest -vv`.
+Against one transfer per recipient, the hook saves more than half the gas from about 50 recipients up. A purpose-built loop contract without fee, pool attribution or access control is about 8–15% cheaper per batch; the hook trades that for same-transaction funding, operator roles, native-currency support with refunds, and on-chain attribution to a V4 pool. Reproduce with `forge test --match-contract BatchDistributeHookGasTest -vv`.
 
 ## Deployments
 
@@ -106,6 +110,8 @@ Against one transfer per recipient, the hook saves more than half the gas from a
 | Base (8453)  | `0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010` | [`0x31b9f034…ebe9d`](https://basescan.org/tx/0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d) | [verified source](https://basescan.org/address/0xB9c1aB7BD023C784c19B8e9F10CE9CDEd9fF9010#code) |
 
 Full deploy tx hash: `0x31b9f03443fd4ba57dea856f4e332b9f17a7a5a32b582213b185b51ea15ebe9d` (block 52791101). Constructor arguments and salt are recorded in [`deployments/base.json`](deployments/base.json).
+
+> **This deployment predates the current source.** It has no partial-delivery refund handling, so it has no `claimRefund`, `pendingRefunds`, `releaseRefund` or `BatchRefunded`, and it can't receive native refunds. The rest of this README describes the current source, which isn't deployed yet.
 
 ### Dependencies
 

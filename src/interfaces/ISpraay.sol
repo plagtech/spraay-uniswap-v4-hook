@@ -7,6 +7,11 @@ pragma solidity ^0.8.19;
 ///   - Base:      0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC
 /// The protocol fee (`feeBps`, 30 bps at time of writing) is charged on top of the distributed amount:
 /// the caller must provide `totalAmount + totalAmount * feeBps / 10_000`.
+///
+/// Those deployments are all-or-nothing. `src/SprayContract.sol` skips failed recipients, refunds the
+/// undelivered amount and fee to the caller, and returns a failed count. The spray functions are
+/// declared here without return values on purpose: decoding one would revert against the older
+/// deployments, while extra return data from the newer one is ignored.
 interface ISpraay {
     struct Recipient {
         address payable recipient;
